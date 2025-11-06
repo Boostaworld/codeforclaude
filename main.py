@@ -6,10 +6,10 @@ from datetime import datetime
 import discord
 
 @nightyScript(
-    name="Blox Fruits Trader",
+    name="Blox Fruits TraderV2",
     author="Grok",
     description="Auto-send trades to Blox Fruits channels",
-    version="3.3"
+    version="3.4"
 )
 def blox_fruits_trader():
     BASE_DIR = Path(getScriptsPath()) / "json"
@@ -31,7 +31,9 @@ def blox_fruits_trader():
 
     class AutoState:
         running = False
+        batch_running = False
         task = None
+        should_stop = False
 
     def load_data():
         try:
@@ -101,15 +103,14 @@ def blox_fruits_trader():
 
     # Controls
     ctrl = card.create_group(type="columns", gap=3, full_width=True)
-    send_all_btn = ctrl.create_ui_element(UI.Button, label='Send to All', disabled=True, color="default")
-    auto_check = ctrl.create_ui_element(UI.Checkbox, label='Auto Send', checked=False)
+    auto_check = ctrl.create_ui_element(UI.Checkbox, label='Auto Send Mode', checked=False)
+    start_btn = ctrl.create_ui_element(UI.Button, label='Start', disabled=True, color="success")
+    stop_btn = ctrl.create_ui_element(UI.Button, label='Stop', disabled=True, color="danger")
 
     # Tables
     tables = card.create_group(type="columns", gap=6, full_width=True)
     
-    # Channel table placeholder - we'll add buttons after defining functions
     ch_table = None
-    
     tr_table = tables.create_ui_element(
         UI.Table, selectable=False, search=False, items_per_page=5,
         columns=[{"type": "text", "label": "Trade"}], rows=[]
@@ -205,7 +206,6 @@ def blox_fruits_trader():
 
     # Main Functions
     def sendNowToChannel_sync(row_id):
-        """Synchronous wrapper for async send function"""
         bot.loop.create_task(sendNowToChannel(row_id))
     
     async def sendNowToChannel(cid):
@@ -253,7 +253,6 @@ def blox_fruits_trader():
             print(f"Send error: {e}", type_="ERROR")
     
     def removeChannel_sync(row_id):
-        """Synchronous wrapper for remove function"""
         removeChannel(row_id)
     
     def removeChannel(cid):
@@ -266,7 +265,6 @@ def blox_fruits_trader():
         except Exception as e:
             print(f"Remove error: {e}", type_="ERROR")
 
-    # Now create the channel table with properly defined callbacks
     ch_table = tables.create_ui_element(
         UI.Table, selectable=False, search=True, items_per_page=10,
         columns=[
@@ -281,13 +279,15 @@ def blox_fruits_trader():
     )
 
     async def detect():
-        print("🔍 Detect button clicked - scanning for channels...", type_="INFO")
         det_btn.loading = True
+        det_btn.disabled = True
         try:
             d = load_data()
             added = 0
-            kw = ["trading", "slow-trading", "fast-trading", "trade-chat", "trades"]
+            kw = ["trading", "slow-trading", "fast-trading", "trade-chat", "trades", "trade"]
             ex = ["pvb", "sab"]
+            
+            print("Scanning servers for trading channels...", type_="INFO")
             
             for g in bot.guilds:
                 for ch in g.text_channels:
@@ -297,7 +297,7 @@ def blox_fruits_trader():
                         if any(tc["id"] == cid for tc in d["trade_channels"]):
                             continue
                         
-                        print(f"  Found: #{ch.name} in {g.name}", type_="INFO")
+                        trade_emoji = await find_trade_emoji(g)
                         
                         d["trade_channels"].append({
                             "id": cid,
@@ -307,7 +307,7 @@ def blox_fruits_trader():
                             "channel_name": ch.name,
                             "cooldown": 60,
                             "last_sent": None,
-                            "trade_emoji": await find_trade_emoji(g)
+                            "trade_emoji": trade_emoji
                         })
                         
                         ch_table.insert_rows([{
@@ -315,18 +315,25 @@ def blox_fruits_trader():
                             "cells": [
                                 {"text": ch.name, "imageUrl": str(g.icon.url) if g.icon else "", "subtext": g.name},
                                 {"text": "60s", "subtext": "Ready"},
-                                {"text": "Ready", "subtext": "Never sent"},
+                                {"text": "Ready", "subtext": "Never"},
                                 {}
                             ]
                         }])
                         added += 1
+                        print(f"Found: {ch.name} in {g.name}", type_="SUCCESS")
             
             save_data(d)
-            print(f"✅ Detection complete: Added {added} channels (no messages sent)", type_="SUCCESS")
+            print(f"✓ Detection complete: Found {added} new trading channels", type_="SUCCESS")
+            
+            # Enable start button if we have channels and trade configured
+            if d["trade_channels"] and d["trade_offers"] and d["trade_requests"]:
+                start_btn.disabled = False
+                
         except Exception as e:
             print(f"Detect failed: {e}", type_="ERROR")
         finally:
             det_btn.loading = False
+            det_btn.disabled = False
 
     async def add():
         add_btn.loading = True
@@ -368,7 +375,7 @@ def blox_fruits_trader():
                     "cells": [
                         {"text": ch.name, "imageUrl": str(g.icon.url) if g.icon else "", "subtext": g.name},
                         {"text": f"{cd}s", "subtext": "Ready"},
-                        {"text": "Ready", "subtext": "Never sent"},
+                        {"text": "Ready", "subtext": "Never"},
                         {}
                     ]
                 }])
@@ -378,6 +385,11 @@ def blox_fruits_trader():
             srv_in.value = ""
             ch_in.value = ""
             add_btn.disabled = True
+            
+            # Enable start button if we have trade configured
+            if d["trade_offers"] and d["trade_requests"]:
+                start_btn.disabled = False
+                
         except Exception as e:
             print(f"Add failed: {e}", type_="ERROR")
         finally:
@@ -406,33 +418,48 @@ def blox_fruits_trader():
         print(f"Saved: {len(offers)} offers, {len(requests)} requests", type_="SUCCESS")
         
         save_btn.loading = False
-        send_all_btn.disabled = False
+        
+        # Enable start button if we have channels
+        if d["trade_channels"]:
+            start_btn.disabled = False
 
-    async def send_to_all():
-        print("📤 'Send to All' button clicked - starting batch send...", type_="INFO")
-        send_all_btn.loading = True
-        send_all_btn.disabled = True
+    async def send_batch():
+        AutoState.batch_running = True
+        AutoState.should_stop = False
+        start_btn.disabled = True
+        stop_btn.disabled = False
+        
         d = load_data()
         
         if not d["trade_offers"] or not d["trade_requests"]:
             print("Configure trade first", type_="WARNING")
-            send_all_btn.loading = False
-            send_all_btn.disabled = False
+            AutoState.batch_running = False
+            start_btn.disabled = False
+            stop_btn.disabled = True
             return
         
         if not d["trade_channels"]:
             print("Add channels first", type_="WARNING")
-            send_all_btn.loading = False
-            send_all_btn.disabled = False
+            AutoState.batch_running = False
+            start_btn.disabled = False
+            stop_btn.disabled = True
             return
         
         sent = skip = fail = 0
+        total = len(d["trade_channels"])
         
-        for c in d["trade_channels"]:
+        print(f"Starting batch send to {total} channels...", type_="INFO")
+        
+        for idx, c in enumerate(d["trade_channels"], 1):
+            if AutoState.should_stop:
+                print(f"⏸ Batch stopped at channel {idx}/{total}: {c['channel_name']}", type_="WARNING")
+                break
+                
             try:
                 rem = get_cooldown_remaining(c.get("last_sent"), c["cooldown"])
                 if rem > 0:
                     skip += 1
+                    print(f"[{idx}/{total}] Skipped {c['channel_name']} (cooldown: {rem}s)", type_="INFO")
                     continue
                 
                 msg = await build_msg(c["server_id"], d["trade_offers"], d["trade_requests"], c.get("trade_emoji"))
@@ -441,36 +468,59 @@ def blox_fruits_trader():
                 if ok:
                     sent += 1
                     c["last_sent"] = datetime.now().isoformat()
-                    print(f"✓ {c['channel_name']}", type_="SUCCESS")
+                    print(f"[{idx}/{total}] ✓ {c['channel_name']}", type_="SUCCESS")
                 else:
                     fail += 1
-                    print(f"✗ {c['channel_name']}: {err}", type_="ERROR")
+                    print(f"[{idx}/{total}] ✗ {c['channel_name']}: {err}", type_="ERROR")
                 
                 await asyncio.sleep(random.uniform(2, 4))
-            except:
+            except Exception as e:
                 fail += 1
+                print(f"[{idx}/{total}] ✗ {c['channel_name']}: {str(e)}", type_="ERROR")
         
         save_data(d)
-        print(f"Done: {sent} sent, {skip} skipped, {fail} failed", type_="INFO")
-        send_all_btn.loading = False
-        send_all_btn.disabled = False
+        
+        if AutoState.should_stop:
+            print(f"Batch stopped: {sent} sent, {skip} skipped, {fail} failed", type_="WARNING")
+        else:
+            print(f"Batch complete: {sent} sent, {skip} skipped, {fail} failed", type_="SUCCESS")
+        
+        AutoState.batch_running = False
+        AutoState.should_stop = False
+        start_btn.disabled = False
+        stop_btn.disabled = True
 
     async def auto_loop():
-        print("🤖 Auto send started - will send automatically when cooldowns expire", type_="SUCCESS")
+        print("Auto-send loop started", type_="SUCCESS")
+        
+        # Track failed channels to avoid immediate retries
+        failed_channels = {}
         
         while AutoState.running:
             try:
                 d = load_data()
                 
                 if not d["trade_offers"] or not d["trade_requests"] or not d["trade_channels"]:
-                    await asyncio.sleep(2)
+                    await asyncio.sleep(5)
                     continue
                 
                 min_wait = float('inf')
+                current_time = datetime.now()
                 
                 for c in d["trade_channels"]:
                     if not AutoState.running:
                         break
+                    
+                    cid = c["id"]
+                    
+                    # Skip recently failed channels (wait 5 minutes before retry)
+                    if cid in failed_channels:
+                        time_since_fail = (current_time - failed_channels[cid]).total_seconds()
+                        if time_since_fail < 300:  # 5 minutes
+                            continue
+                        else:
+                            # Enough time has passed, remove from failed list
+                            del failed_channels[cid]
                     
                     rem = get_cooldown_remaining(c.get("last_sent"), c["cooldown"])
                     
@@ -484,48 +534,67 @@ def blox_fruits_trader():
                             
                             if ok:
                                 c["last_sent"] = datetime.now().isoformat()
-                                print(f"🤖 Auto: ✓ {c['channel_name']}", type_="SUCCESS")
+                                print(f"✓ Auto: {c['channel_name']}", type_="SUCCESS")
+                                # Remove from failed list if it was there
+                                if cid in failed_channels:
+                                    del failed_channels[cid]
                             else:
-                                print(f"🤖 Auto: ✗ {c['channel_name']}: {err}", type_="ERROR")
+                                # Mark as failed to avoid immediate retries
+                                failed_channels[cid] = current_time
+                                print(f"✗ Auto: {c['channel_name']}: {err} (will retry in 5 min)", type_="ERROR")
                             
                             await asyncio.sleep(random.uniform(2, 4))
                         except Exception as e:
-                            print(f"🤖 Auto: Error in {c.get('channel_name', '?')}: {e}", type_="ERROR")
+                            failed_channels[cid] = current_time
+                            print(f"✗ Auto: {c['channel_name']}: {str(e)} (will retry in 5 min)", type_="ERROR")
                 
                 save_data(d)
                 
-                wait_time = max(1, min_wait if min_wait != float('inf') else 5)
+                wait_time = max(5, min_wait if min_wait != float('inf') else 10)
                 await asyncio.sleep(wait_time)
                 
             except Exception as e:
-                print(f"🤖 Auto loop error: {e}", type_="ERROR")
-                await asyncio.sleep(5)
+                print(f"Auto-loop error: {str(e)}", type_="ERROR")
+                await asyncio.sleep(10)
         
-        print("🤖 Auto send stopped", type_="INFO")
+        print("Auto-send loop stopped", type_="INFO")
 
-    def toggle_auto(checked):
-        if checked:
-            d = load_data()  # Use fresh data, not stale 'data' variable
-            if not d.get("trade_offers") or not d.get("trade_requests"):
-                print("❌ Cannot enable Auto Send: Configure trade offers/requests first", type_="WARNING")
-                auto_check.checked = False
-                return
-            
-            if not d.get("trade_channels"):
-                print("❌ Cannot enable Auto Send: Add channels first", type_="WARNING")
-                auto_check.checked = False
-                return
-            
-            print("✅ Auto Send enabled - channels will be sent to automatically", type_="SUCCESS")
+    def start_operation():
+        d = load_data()
+        
+        if not d["trade_offers"] or not d["trade_requests"]:
+            print("Configure trade first", type_="WARNING")
+            return
+        
+        if not d["trade_channels"]:
+            print("Add channels first", type_="WARNING")
+            return
+        
+        if auto_check.checked:
+            # Start auto-send loop
             AutoState.running = True
-            send_all_btn.disabled = True
+            start_btn.disabled = True
+            stop_btn.disabled = False
             AutoState.task = bot.loop.create_task(auto_loop())
         else:
-            print("⏸️ Auto Send disabled", type_="INFO")
-            AutoState.running = False
-            if AutoState.task:
-                AutoState.task.cancel()
-            send_all_btn.disabled = False
+            # Send one batch
+            bot.loop.create_task(send_batch())
+
+    def stop_operation():
+        if auto_check.checked:
+            # Stop auto-send loop
+            if AutoState.running:
+                AutoState.running = False
+                if AutoState.task:
+                    AutoState.task.cancel()
+                start_btn.disabled = False
+                stop_btn.disabled = True
+                print("Auto-send loop stopped", type_="INFO")
+        else:
+            # Stop batch operation
+            if AutoState.batch_running:
+                AutoState.should_stop = True
+                print("Stopping batch send...", type_="WARNING")
 
     # Event Handlers
     def on_srv_input(v):
@@ -548,32 +617,29 @@ def blox_fruits_trader():
     add_btn.onClick = lambda: bot.loop.create_task(add())
     det_btn.onClick = lambda: bot.loop.create_task(detect())
     save_btn.onClick = save_trade
-    send_all_btn.onClick = lambda: bot.loop.create_task(send_to_all())
-    auto_check.onChange = toggle_auto
+    start_btn.onClick = start_operation
+    stop_btn.onClick = stop_operation
 
     # Initialization
     async def init():
         d = load_data()
         
-        print("🚀 Initializing Blox Fruits Trader...", type_="INFO")
-        
         for c in d["trade_channels"]:
             try:
                 rem = get_cooldown_remaining(c.get("last_sent"), c.get("cooldown", 60))
                 st = f"CD: {rem}s" if rem > 0 else "Ready"
-                last_sent_display = c.get("last_sent", "Never sent")[:19] if c.get("last_sent") else "Never sent"
                 
                 ch_table.insert_rows([{
                     "id": c["id"],
                     "cells": [
                         {"text": c.get("channel_name", "?"), "imageUrl": c.get("server_icon", ""), "subtext": c.get("server_name", "")},
                         {"text": f"{c.get('cooldown', 60)}s", "subtext": st},
-                        {"text": st, "subtext": last_sent_display},
+                        {"text": st, "subtext": c.get("last_sent", "Never")[:19]},
                         {}
                     ]
                 }])
-            except Exception as e:
-                print(f"Error loading channel {c.get('channel_name', '?')}: {e}", type_="WARNING")
+            except:
+                pass
         
         if d.get("trade_offers") and d.get("trade_requests"):
             off_in.value = ", ".join(d["trade_offers"])
@@ -582,13 +648,11 @@ def blox_fruits_trader():
             tr_table.insert_rows([{"id": "o", "cells": [{"text": f"Offering: {', '.join(d['trade_offers'])}"}]}])
             tr_table.insert_rows([{"id": "r", "cells": [{"text": f"Requesting: {', '.join(d['trade_requests'])}"}]}])
             
-            send_all_btn.disabled = False
+            # Enable start button if we have channels
+            if d["trade_channels"]:
+                start_btn.disabled = False
         
-        print(f"✅ Loaded {len(d['trade_channels'])} channels", type_="SUCCESS")
-        if AutoState.running:
-            print("🤖 Auto Send is currently ENABLED", type_="INFO")
-        else:
-            print("⏸️ Auto Send is currently DISABLED", type_="INFO")
+        print(f"Loaded {len(d['trade_channels'])} channels", type_="SUCCESS")
 
     bot.loop.create_task(init())
     tab.render()
