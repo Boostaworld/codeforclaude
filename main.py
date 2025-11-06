@@ -6,10 +6,10 @@ from datetime import datetime
 import discord
 
 @nightyScript(
-    name="Blox Fruits Trader",
+    name="Blox Fruits TraderV2",
     author="Grok",
     description="Auto-send trades to Blox Fruits channels",
-    version="3.2"
+    version="3.3"
 )
 def blox_fruits_trader():
     BASE_DIR = Path(getScriptsPath()) / "json"
@@ -90,99 +90,32 @@ def blox_fruits_trader():
     srv_in = top.create_ui_element(UI.Input, label="Server ID", full_width=True, show_clear_button=True)
     ch_in = top.create_ui_element(UI.Input, label="Channel IDs", full_width=True, show_clear_button=True)
     cd_in = top.create_ui_element(UI.Input, label="Cooldown", value="60", full_width=True)
-    add_btn = top.create_ui_element(UI.Button, label='Add', disabled=True, color="primary")
+    add_btn = top.create_ui_element(UI.Button, label='Add', disabled=True, color="default")
     det_btn = top.create_ui_element(UI.Button, label='Detect', color="default")
 
     # Trade
     trade = card.create_group(type="columns", gap=3, full_width=True)
     off_in = trade.create_ui_element(UI.Input, label="Offering", placeholder="dough, spirit, OR, trex", full_width=True, show_clear_button=True)
     req_in = trade.create_ui_element(UI.Input, label="Requesting", placeholder="rumble, tiger", full_width=True, show_clear_button=True)
-    save_btn = trade.create_ui_element(UI.Button, label='Save', disabled=True, color="primary")
+    save_btn = trade.create_ui_element(UI.Button, label='Save', disabled=True, color="default")
 
     # Controls
     ctrl = card.create_group(type="columns", gap=3, full_width=True)
-    send_all_btn = ctrl.create_ui_element(UI.Button, label='Send to All', disabled=True, color="success")
-    auto_check = ctrl.create_ui_element(UI.Checkbox, label='Auto Send', value=False)
+    send_all_btn = ctrl.create_ui_element(UI.Button, label='Send to All', disabled=True, color="default")
+    auto_check = ctrl.create_ui_element(UI.Checkbox, label='Auto Send', checked=False)
 
     # Tables
     tables = card.create_group(type="columns", gap=6, full_width=True)
     
-    ch_table = tables.create_ui_element(
-        UI.Table, selectable=False, search=True, items_per_page=10,
-        columns=[
-            {"type": "text", "label": "Channel"},
-            {"type": "text", "label": "Cooldown"},
-            {"type": "text", "label": "Status"},
-            {"type": "button", "label": "Actions", "buttons": [
-                {"label": "Send Now", "color": "success", "onClick": lambda row_id: sendNowToChannel(row_id)},
-                {"label": "Remove", "color": "danger", "onClick": lambda row_id: removeChannel(row_id)}
-            ]}
-        ], rows=[]
-    )
-
+    # Channel table placeholder - we'll add buttons after defining functions
+    ch_table = None
+    
     tr_table = tables.create_ui_element(
         UI.Table, selectable=False, search=False, items_per_page=5,
         columns=[{"type": "text", "label": "Trade"}], rows=[]
     )
 
-    # Functions
-    async def sendNowToChannel(cid):
-        try:
-            d = load_data()
-            
-            if not d["trade_offers"] or not d["trade_requests"]:
-                print("Configure trade first", type_="WARNING")
-                return
-            
-            # Find the channel
-            channel = None
-            for tc in d["trade_channels"]:
-                if tc["id"] == cid:
-                    channel = tc
-                    break
-            
-            if not channel:
-                print("Channel not found", type_="ERROR")
-                return
-            
-            # Send message
-            msg = await build_msg(channel["server_id"], d["trade_offers"], d["trade_requests"], channel.get("trade_emoji"))
-            ok, err = await send_to(channel["id"], msg)
-            
-            if ok:
-                channel["last_sent"] = datetime.now().isoformat()
-                save_data(d)
-                print(f"✓ Sent to {channel['channel_name']}", type_="SUCCESS")
-                
-                # Update table row
-                rem = get_cooldown_remaining(channel.get("last_sent"), channel.get("cooldown", 60))
-                st = f"CD: {rem}s" if rem > 0 else "Ready"
-                
-                ch_table.update_rows([{
-                    "id": cid,
-                    "cells": [
-                        {"text": channel.get("channel_name", "?"), "imageUrl": channel.get("server_icon", ""), "subtext": channel.get("server_name", "")},
-                        {"text": f"{channel.get('cooldown', 60)}s", "subtext": st},
-                        {"text": st, "subtext": channel.get("last_sent", "Never")[:19]},
-                        {}
-                    ]
-                }])
-            else:
-                print(f"✗ {channel['channel_name']}: {err}", type_="ERROR")
-                
-        except Exception as e:
-            print(f"Send error: {e}", type_="ERROR")
-    
-    def removeChannel(cid):
-        try:
-            d = load_data()
-            d["trade_channels"] = [tc for tc in d["trade_channels"] if tc["id"] != cid]
-            save_data(d)
-            ch_table.delete_rows([cid])
-            print(f"Removed channel {cid}", type_="SUCCESS")
-        except Exception as e:
-            print(f"Remove error: {e}", type_="ERROR")
-
+    # Helper Functions
     async def find_trade_emoji(guild):
         try:
             for e in guild.emojis:
@@ -269,6 +202,83 @@ def blox_fruits_trader():
             return False, "No perm"
         except:
             return False, "Error"
+
+    # Main Functions
+    def sendNowToChannel_sync(row_id):
+        """Synchronous wrapper for async send function"""
+        bot.loop.create_task(sendNowToChannel(row_id))
+    
+    async def sendNowToChannel(cid):
+        try:
+            d = load_data()
+            
+            if not d["trade_offers"] or not d["trade_requests"]:
+                print("Configure trade first", type_="WARNING")
+                return
+            
+            channel = None
+            for tc in d["trade_channels"]:
+                if tc["id"] == cid:
+                    channel = tc
+                    break
+            
+            if not channel:
+                print("Channel not found", type_="ERROR")
+                return
+            
+            msg = await build_msg(channel["server_id"], d["trade_offers"], d["trade_requests"], channel.get("trade_emoji"))
+            ok, err = await send_to(channel["id"], msg)
+            
+            if ok:
+                channel["last_sent"] = datetime.now().isoformat()
+                save_data(d)
+                print(f"✓ Sent to {channel['channel_name']}", type_="SUCCESS")
+                
+                rem = get_cooldown_remaining(channel.get("last_sent"), channel.get("cooldown", 60))
+                st = f"CD: {rem}s" if rem > 0 else "Ready"
+                
+                ch_table.update_rows([{
+                    "id": cid,
+                    "cells": [
+                        {"text": channel.get("channel_name", "?"), "imageUrl": channel.get("server_icon", ""), "subtext": channel.get("server_name", "")},
+                        {"text": f"{channel.get('cooldown', 60)}s", "subtext": st},
+                        {"text": st, "subtext": channel.get("last_sent", "Never")[:19]},
+                        {}
+                    ]
+                }])
+            else:
+                print(f"✗ {channel['channel_name']}: {err}", type_="ERROR")
+                
+        except Exception as e:
+            print(f"Send error: {e}", type_="ERROR")
+    
+    def removeChannel_sync(row_id):
+        """Synchronous wrapper for remove function"""
+        removeChannel(row_id)
+    
+    def removeChannel(cid):
+        try:
+            d = load_data()
+            d["trade_channels"] = [tc for tc in d["trade_channels"] if tc["id"] != cid]
+            save_data(d)
+            ch_table.delete_rows([cid])
+            print(f"Removed channel {cid}", type_="SUCCESS")
+        except Exception as e:
+            print(f"Remove error: {e}", type_="ERROR")
+
+    # Now create the channel table with properly defined callbacks
+    ch_table = tables.create_ui_element(
+        UI.Table, selectable=False, search=True, items_per_page=10,
+        columns=[
+            {"type": "text", "label": "Channel"},
+            {"type": "text", "label": "Cooldown"},
+            {"type": "text", "label": "Status"},
+            {"type": "button", "label": "Actions", "buttons": [
+                {"label": "Send Now", "color": "default", "onClick": sendNowToChannel_sync},
+                {"label": "Remove", "color": "danger", "onClick": removeChannel_sync}
+            ]}
+        ], rows=[]
+    )
 
     async def detect():
         det_btn.loading = True
@@ -452,7 +462,6 @@ def blox_fruits_trader():
                     await asyncio.sleep(2)
                     continue
                 
-                # Find the channel with the shortest time until next send
                 min_wait = float('inf')
                 
                 for c in d["trade_channels"]:
@@ -461,11 +470,9 @@ def blox_fruits_trader():
                     
                     rem = get_cooldown_remaining(c.get("last_sent"), c["cooldown"])
                     
-                    # Track minimum wait time
                     if rem < min_wait:
                         min_wait = rem
                     
-                    # If ready, send immediately
                     if rem <= 0:
                         try:
                             msg = await build_msg(c["server_id"], d["trade_offers"], d["trade_requests"], c.get("trade_emoji"))
@@ -481,7 +488,6 @@ def blox_fruits_trader():
                 
                 save_data(d)
                 
-                # Sleep until the next channel is ready (minimum 1 second)
                 wait_time = max(1, min_wait if min_wait != float('inf') else 5)
                 await asyncio.sleep(wait_time)
                 
@@ -494,12 +500,12 @@ def blox_fruits_trader():
         if checked:
             if not data.get("trade_offers") or not data.get("trade_requests"):
                 print("Configure trade first", type_="WARNING")
-                auto_check.value = False
+                auto_check.checked = False
                 return
             
             if not data.get("trade_channels"):
                 print("Add channels first", type_="WARNING")
-                auto_check.value = False
+                auto_check.checked = False
                 return
             
             AutoState.running = True
@@ -511,19 +517,31 @@ def blox_fruits_trader():
                 AutoState.task.cancel()
             send_all_btn.disabled = False
 
-    # Events
-    srv_in.onInput = lambda v: setattr(add_btn, 'disabled', not (v and ch_in.value and v.isdigit() and len(v) >= 17))
-    ch_in.onInput = lambda v: setattr(add_btn, 'disabled', not (v and srv_in.value and srv_in.value.isdigit()))
-    off_in.onInput = lambda v: setattr(save_btn, 'disabled', not (v and req_in.value))
-    req_in.onInput = lambda v: setattr(save_btn, 'disabled', not (v and off_in.value))
+    # Event Handlers
+    def on_srv_input(v):
+        add_btn.disabled = not (v and ch_in.value and v.isdigit() and len(v) >= 17)
     
-    add_btn.onClick = add
-    det_btn.onClick = detect
+    def on_ch_input(v):
+        add_btn.disabled = not (v and srv_in.value and srv_in.value.isdigit())
+    
+    def on_off_input(v):
+        save_btn.disabled = not (v and req_in.value)
+    
+    def on_req_input(v):
+        save_btn.disabled = not (v and off_in.value)
+    
+    srv_in.onInput = on_srv_input
+    ch_in.onInput = on_ch_input
+    off_in.onInput = on_off_input
+    req_in.onInput = on_req_input
+    
+    add_btn.onClick = lambda: bot.loop.create_task(add())
+    det_btn.onClick = lambda: bot.loop.create_task(detect())
     save_btn.onClick = save_trade
-    send_all_btn.onClick = send_to_all
+    send_all_btn.onClick = lambda: bot.loop.create_task(send_to_all())
     auto_check.onChange = toggle_auto
 
-    # Init
+    # Initialization
     async def init():
         d = load_data()
         
