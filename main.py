@@ -6,7 +6,7 @@ from datetime import datetime
 import discord
 
 @nightyScript(
-    name="Blox Fruits TraderV2",
+    name="Blox Fruits Trader",
     author="Grok",
     description="Auto-send trades to Blox Fruits channels",
     version="3.3"
@@ -281,6 +281,7 @@ def blox_fruits_trader():
     )
 
     async def detect():
+        print("🔍 Detect button clicked - scanning for channels...", type_="INFO")
         det_btn.loading = True
         try:
             d = load_data()
@@ -295,6 +296,8 @@ def blox_fruits_trader():
                         cid = str(ch.id)
                         if any(tc["id"] == cid for tc in d["trade_channels"]):
                             continue
+                        
+                        print(f"  Found: #{ch.name} in {g.name}", type_="INFO")
                         
                         d["trade_channels"].append({
                             "id": cid,
@@ -312,14 +315,14 @@ def blox_fruits_trader():
                             "cells": [
                                 {"text": ch.name, "imageUrl": str(g.icon.url) if g.icon else "", "subtext": g.name},
                                 {"text": "60s", "subtext": "Ready"},
-                                {"text": "Ready", "subtext": "Auto"},
+                                {"text": "Ready", "subtext": "Never sent"},
                                 {}
                             ]
                         }])
                         added += 1
             
             save_data(d)
-            print(f"Detected {added} channels", type_="SUCCESS")
+            print(f"✅ Detection complete: Added {added} channels (no messages sent)", type_="SUCCESS")
         except Exception as e:
             print(f"Detect failed: {e}", type_="ERROR")
         finally:
@@ -365,7 +368,7 @@ def blox_fruits_trader():
                     "cells": [
                         {"text": ch.name, "imageUrl": str(g.icon.url) if g.icon else "", "subtext": g.name},
                         {"text": f"{cd}s", "subtext": "Ready"},
-                        {"text": "Ready", "subtext": "Never"},
+                        {"text": "Ready", "subtext": "Never sent"},
                         {}
                     ]
                 }])
@@ -406,6 +409,7 @@ def blox_fruits_trader():
         send_all_btn.disabled = False
 
     async def send_to_all():
+        print("📤 'Send to All' button clicked - starting batch send...", type_="INFO")
         send_all_btn.loading = True
         send_all_btn.disabled = True
         d = load_data()
@@ -452,7 +456,7 @@ def blox_fruits_trader():
         send_all_btn.disabled = False
 
     async def auto_loop():
-        print("Auto send started", type_="SUCCESS")
+        print("🤖 Auto send started - will send automatically when cooldowns expire", type_="SUCCESS")
         
         while AutoState.running:
             try:
@@ -480,38 +484,44 @@ def blox_fruits_trader():
                             
                             if ok:
                                 c["last_sent"] = datetime.now().isoformat()
-                                print(f"✓ Auto: {c['channel_name']}", type_="SUCCESS")
+                                print(f"🤖 Auto: ✓ {c['channel_name']}", type_="SUCCESS")
+                            else:
+                                print(f"🤖 Auto: ✗ {c['channel_name']}: {err}", type_="ERROR")
                             
                             await asyncio.sleep(random.uniform(2, 4))
-                        except:
-                            pass
+                        except Exception as e:
+                            print(f"🤖 Auto: Error in {c.get('channel_name', '?')}: {e}", type_="ERROR")
                 
                 save_data(d)
                 
                 wait_time = max(1, min_wait if min_wait != float('inf') else 5)
                 await asyncio.sleep(wait_time)
                 
-            except:
+            except Exception as e:
+                print(f"🤖 Auto loop error: {e}", type_="ERROR")
                 await asyncio.sleep(5)
         
-        print("Auto send stopped", type_="INFO")
+        print("🤖 Auto send stopped", type_="INFO")
 
     def toggle_auto(checked):
         if checked:
-            if not data.get("trade_offers") or not data.get("trade_requests"):
-                print("Configure trade first", type_="WARNING")
+            d = load_data()  # Use fresh data, not stale 'data' variable
+            if not d.get("trade_offers") or not d.get("trade_requests"):
+                print("❌ Cannot enable Auto Send: Configure trade offers/requests first", type_="WARNING")
                 auto_check.checked = False
                 return
             
-            if not data.get("trade_channels"):
-                print("Add channels first", type_="WARNING")
+            if not d.get("trade_channels"):
+                print("❌ Cannot enable Auto Send: Add channels first", type_="WARNING")
                 auto_check.checked = False
                 return
             
+            print("✅ Auto Send enabled - channels will be sent to automatically", type_="SUCCESS")
             AutoState.running = True
             send_all_btn.disabled = True
             AutoState.task = bot.loop.create_task(auto_loop())
         else:
+            print("⏸️ Auto Send disabled", type_="INFO")
             AutoState.running = False
             if AutoState.task:
                 AutoState.task.cancel()
@@ -545,22 +555,25 @@ def blox_fruits_trader():
     async def init():
         d = load_data()
         
+        print("🚀 Initializing Blox Fruits Trader...", type_="INFO")
+        
         for c in d["trade_channels"]:
             try:
                 rem = get_cooldown_remaining(c.get("last_sent"), c.get("cooldown", 60))
                 st = f"CD: {rem}s" if rem > 0 else "Ready"
+                last_sent_display = c.get("last_sent", "Never sent")[:19] if c.get("last_sent") else "Never sent"
                 
                 ch_table.insert_rows([{
                     "id": c["id"],
                     "cells": [
                         {"text": c.get("channel_name", "?"), "imageUrl": c.get("server_icon", ""), "subtext": c.get("server_name", "")},
                         {"text": f"{c.get('cooldown', 60)}s", "subtext": st},
-                        {"text": st, "subtext": c.get("last_sent", "Never")[:19]},
+                        {"text": st, "subtext": last_sent_display},
                         {}
                     ]
                 }])
-            except:
-                pass
+            except Exception as e:
+                print(f"Error loading channel {c.get('channel_name', '?')}: {e}", type_="WARNING")
         
         if d.get("trade_offers") and d.get("trade_requests"):
             off_in.value = ", ".join(d["trade_offers"])
@@ -571,7 +584,11 @@ def blox_fruits_trader():
             
             send_all_btn.disabled = False
         
-        print(f"Loaded {len(d['trade_channels'])} channels", type_="SUCCESS")
+        print(f"✅ Loaded {len(d['trade_channels'])} channels", type_="SUCCESS")
+        if AutoState.running:
+            print("🤖 Auto Send is currently ENABLED", type_="INFO")
+        else:
+            print("⏸️ Auto Send is currently DISABLED", type_="INFO")
 
     bot.loop.create_task(init())
     tab.render()
